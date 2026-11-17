@@ -1,0 +1,25 @@
+# Local dev services. Run Django itself from your venv for now;
+# a full Dockerfile + Gunicorn + Nginx setup comes in the deployment phase.
+services:
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: taskhub
+      POSTGRES_USER: taskhub
+      POSTGRES_PASSWORD: taskhub
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U taskhub"]
+      interval: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+volumes:
+  pgdata:
