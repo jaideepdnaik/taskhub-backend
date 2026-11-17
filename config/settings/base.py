@@ -104,7 +104,7 @@ REST_FRAMEWORK = {
         "rest_framework.filters.SearchFilter",
         "rest_framework.filters.OrderingFilter",
     ),
-    "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
+    "DEFAULT_PAGINATION_CLASS": "apps.core.pagination.StandardPagination",
     "PAGE_SIZE": 20,
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
 }
@@ -127,6 +127,9 @@ SPECTACULAR_SETTINGS = {
     "ENUM_NAME_OVERRIDES": {
         "RoleEnum": "apps.organizations.models.Role",
         "AssignableRoleEnum": "apps.organizations.serializers.ASSIGNABLE_ROLES",
+        "InvitationStatusEnum": "apps.organizations.models.InvitationStatus",
+        "TaskStatusEnum": "apps.tasks.models.TaskStatus",
+        "TaskPriorityEnum": "apps.tasks.models.TaskPriority",
     },
 }
 

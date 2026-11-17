@@ -1,5 +1,5 @@
 from django.contrib.auth import get_user_model
-from django.db.models import Count, Exists, OuterRef
+from django.db.models import Count
 from drf_spectacular.utils import OpenApiParameter, extend_schema
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
@@ -43,16 +43,11 @@ class ProjectViewSet(OrgScopedMixin, viewsets.ModelViewSet):
         queryset = super().get_queryset()  # already filtered to the current org
         if getattr(self, "swagger_fake_view", False):
             return queryset
-        is_member = Exists(
-            Project.members.through.objects.filter(
-                project_id=OuterRef("pk"), user_id=self.request.user.pk
-            )
-        )
         # Note: use the Exists subquery (not filter(members=user)) for visibility,
         # otherwise the join is shared with Count("members") and the count shrinks to 1.
         queryset = queryset.annotate(
             member_count=Count("members", distinct=True),
-            is_member=is_member,
+            is_member=Project.objects.member_exists(self.request.user),
         ).select_related("created_by")
         if not self.membership.is_admin:
             queryset = queryset.filter(is_member=True)

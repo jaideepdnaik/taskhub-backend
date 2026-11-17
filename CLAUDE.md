@@ -22,7 +22,7 @@ drf-spectacular · Celery + Redis · Pytest + factory_boy · Docker, Gunicorn, N
 ## Layout
 - `config/settings/` holds `base.py`, `dev.py`, `test.py` and `prod.py`. Config comes from `.env` via django-environ.
 - `config/celery.py`: the Celery app. Tasks go in each app's `tasks.py`.
-- `apps/core/`: `TimeStampedModel` (`models.py`), tenant scoping (`tenancy.py`) and shared org-role permissions (`permissions.py`).
+- `apps/core/`: `TimeStampedModel` (`models.py`), tenant scoping (`tenancy.py`), shared org-role permissions (`permissions.py`) and pagination (`pagination.py`).
 - `apps/accounts/`: a custom `User` that logs in with email (no username). Always use `get_user_model()` or `settings.AUTH_USER_MODEL`.
   - All auth routes live in `apps/accounts/urls.py`: `register`, `login`, `refresh`, `logout` and `me`, under `/api/auth/`.
   - `UserSummarySerializer` (`{id, email, full_name}`) is the shared nested user shape. Reuse it for owners, assignees, authors and so on.
@@ -35,7 +35,7 @@ drf-spectacular · Celery + Redis · Pytest + factory_boy · Docker, Gunicorn, N
 - **Membership**: user, organization, role. Roles are `owner`, `admin`, `member` and `viewer` (the `Role` choices; `ADMIN_ROLES` and `EDITOR_ROLES` group them). Unique on (user, organization). Helpers: `is_admin`, `can_edit`.
 - **Invitation**: organization, email (stored lowercase), role, token (auto, random), invited_by, expires_at (default 7 days), accepted_at. There's at most one pending invite per (organization, email), and the role can never be `owner`. Helpers: `is_expired`, `is_pending`. Re-inviting refreshes the existing pending invite instead of creating a new one.
 - **Project**: organization, name, description, members (M2M User, `related_name="projects"`), created_by (`SET_NULL`), is_archived. Names are unique per org, ignoring case (a `Lower("name")` constraint, also checked in the serializer for a clean 400).
-- **Task**: project, title, description, status (`todo`/`in_progress`/`review`/`done`), priority (`low`/`medium`/`high`/`urgent`), assignee, reporter, due_date, labels (ArrayField), position.
+- **Task**: project, title, description, status (`TaskStatus`: `todo`/`in_progress`/`review`/`done`), priority (`TaskPriority`: `low`/`medium`/`high`/`urgent`), assignee (`SET_NULL`), reporter (`SET_NULL`), due_date, labels (ArrayField with a GIN index), position (0-based within its (project, status) column). The `is_overdue` property is true when it's past due and not done.
 - **Comment**: task, author, body.
 - **ActivityLog**: task, actor, action, changes (JSON).
 - **Notification**: recipient, type, payload (JSON), is_read.
@@ -57,7 +57,8 @@ drf-spectacular · Celery + Redis · Pytest + factory_boy · Docker, Gunicorn, N
 - Org-role permissions live in `apps/core/permissions.py`: `IsOrgMember`, `IsOrgEditorOrReadOnly`, `IsOrgAdmin`, `IsOrgAdminOrReadOnly` and `IsOrgOwner`.
   - They read `view.membership`, so they also enforce login and membership. There's no need to add `IsAuthenticated` next to them.
   - Using one on a view without `OrgScopedMixin` raises `ImproperlyConfigured`.
-- App-specific object permissions go in that app's `permissions.py`, for example `IsProjectMember` in projects and `CanEditTask` in tasks.
+- App-specific permissions go in that app's `permissions.py`, for example `CanEditTask` in `apps/tasks/permissions.py`.
+- "Is this user on the project?" is handled by `Project.objects.visible_to(membership)` and `Project.objects.member_exists(user)` (`apps/projects/models.py`), not by a permission class. Use them in any queryset that needs project visibility; things you can't see return 404.
 - Viewer is read-only. Member can create and edit tasks in their projects. Admin and Owner manage projects and members. Only Owner can delete the org.
 - Outsiders get a 404 from the mixin. Members whose role isn't allowed get a 403 from the permission class.
 - Org-specific permissions live in `apps/organizations/permissions.py`:
@@ -91,6 +92,24 @@ drf-spectacular · Celery + Redis · Pytest + factory_boy · Docker, Gunicorn, N
   - `GET`/`POST /{id}/members/` lists or adds members (`{user_id}`, which must be an org member, otherwise 400). Adding is idempotent and returns the updated list. `DELETE /{id}/members/{user_id}/` removes a member.
   - When a Membership is deleted (removed or left), a `post_delete` signal in `apps/projects/signals.py` removes that user from all of the org's projects.
   - Querysets: use `Exists(...)` for "is the user a member" filters, not `filter(members=user)`. The latter shares the join with `Count("members")` and makes the count wrong.
+- Task rules (`X-Org-ID`, `CanEditTask`):
+  - **Endpoints:**
+    - `GET`/`POST /api/projects/{project_pk}/tasks/` is the board. Create appends to the bottom of its column.
+    - `GET /api/tasks/` lists tasks across all visible projects. `GET`/`PATCH`/`DELETE /api/tasks/{id}/` handles one task. `PATCH /api/tasks/{id}/move/` takes `{status, position}`.
+    - There's no POST on `/api/tasks/` and no PUT.
+  - **Visibility:** tasks in projects the user can see (`visible_to`). Anything else returns 404.
+  - **Roles:** viewers are read-only. Members can create, edit and move any task in their projects. Delete is owner/admin or the task's reporter.
+  - **Write fields:** `title`, `description`, `status`, `priority`, `assignee_id`, `due_date` and `labels`.
+    - `assignee_id` must be a project member, otherwise 400.
+    - Labels are trimmed, de-duplicated and blanks dropped; at most 20, each at most 50 characters.
+    - `project`, `reporter` and `position` are set by the server.
+  - **Ordering on the board:** `apps/tasks/services.py` keeps each column numbered 0..n-1.
+    - `move_task()` locks the rows, inserts the task at the clamped position and renumbers the target and old columns.
+    - Changing status through PATCH moves the task to the bottom of the new column.
+  - Tasks in an archived project are read-only (create, PATCH, move and delete return 400).
+  - **Filters:** `status` and `priority` (repeatable), `assignee` (an id, `me` or `none`), `label`, `due_before`, `due_after`, `overdue`, `project`, plus `search` on title and description.
+  - **Ordering:** `status_rank` and `priority_rank` are annotations that sort by meaning, not alphabet. The default is `status_rank, position, id`.
+  - Losing access unassigns: `apps/tasks/signals.py` sets `assignee=None` when the user is removed from the project (`m2m_changed`) or leaves the org (Membership `post_delete`).
 - Account rules (`/api/auth/`):
   - `POST register/` is public and ignores any `Authorization` header (`authentication_classes = []`).
     - The email is stored lowercase and must be unique, ignoring case.
@@ -104,7 +123,7 @@ drf-spectacular · Celery + Redis · Pytest + factory_boy · Docker, Gunicorn, N
 ## API conventions
 - Use ViewSets with routers, under the `/api/` prefix, with plural nouns. Nest tasks under projects: `/api/projects/{id}/tasks/`.
 - Non-CRUD actions use `@action`, for example `PATCH /api/tasks/{id}/move/` for status plus position.
-- Use django-filter `FilterSet` classes for filtering, plus `SearchFilter` and `OrderingFilter`. Pagination is page-number with `PAGE_SIZE=20`.
+- Use django-filter `FilterSet` classes for filtering, plus `SearchFilter` and `OrderingFilter`. Pagination is page-number with `PAGE_SIZE=20` (`apps/core/pagination.py`: `StandardPagination`). Clients can pass `?page_size=` up to 100.
 - Use separate read and write serializers when the shapes differ. Return nested summaries, such as assignee name and email, on reads.
 - Avoid N+1 queries: use `select_related` and `prefetch_related` in `get_queryset()`.
 - Add `@extend_schema` wherever drf-spectacular can't infer the request or response shape. Keep the schema free of warnings. If two choice fields share a name but have different options, name them in `SPECTACULAR_SETTINGS["ENUM_NAME_OVERRIDES"]`.
@@ -117,7 +136,7 @@ drf-spectacular · Celery + Redis · Pytest + factory_boy · Docker, Gunicorn, N
 
 ## Testing
 - Use pytest and pytest-django with factory_boy factories, in `apps/<app>/tests/factories.py`. Shared fixtures go in the root `conftest.py`.
-  - Existing factories: `UserFactory` (accounts), plus `OrganizationFactory`, `MembershipFactory` and `InvitationFactory` (organizations), plus `ProjectFactory` (projects; pass `members=[...]`). `OrganizationFactory` also creates the owner's `owner` membership.
+  - Existing factories: `UserFactory` (accounts), plus `OrganizationFactory`, `MembershipFactory` and `InvitationFactory` (organizations), plus `ProjectFactory` (projects; pass `members=[...]`) and `TaskFactory` (tasks; appends to the bottom of its column). `OrganizationFactory` also creates the owner's `owner` membership.
   - In test requests, send the org header as `HTTP_X_ORG_ID`.
 - Test models, permissions and API endpoints, including tenant isolation. Aim for coverage of at least 85%.
 - In tests, Celery runs tasks immediately (`CELERY_TASK_ALWAYS_EAGER`) and email goes to the in-memory `locmem` backend.
@@ -139,7 +158,7 @@ drf-spectacular · Celery + Redis · Pytest + factory_boy · Docker, Gunicorn, N
   - [x] API: invitations at `/api/invitations/` (create, list, retrieve, revoke) and `/api/invitations/accept/` (by token, no header), with tests
 - [x] 2. Registration endpoint, `/api/auth/me/`, list my organizations (in `/me/`, and as `GET /api/organizations/`)
 - [x] 3. Projects CRUD with members and archive
-- [ ] 4. Tasks CRUD with filters, search, ordering, pagination and the `move` action
+- [x] 4. Tasks CRUD with filters, search, ordering, pagination and the `move` action
 - [ ] 5. Comments and the activity log
 - [ ] 6. Notifications: Celery emails, a Beat job for due-date reminders, an in-app notifications API
 - [ ] 7. Dashboard stats endpoint, coverage of at least 85%, GitHub Actions CI
