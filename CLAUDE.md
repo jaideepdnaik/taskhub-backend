@@ -36,8 +36,8 @@ drf-spectacular · Celery + Redis · Pytest + factory_boy · Docker, Gunicorn, N
 - **Invitation**: organization, email (stored lowercase), role, token (auto, random), invited_by, expires_at (default 7 days), accepted_at. There's at most one pending invite per (organization, email), and the role can never be `owner`. Helpers: `is_expired`, `is_pending`. Re-inviting refreshes the existing pending invite instead of creating a new one.
 - **Project**: organization, name, description, members (M2M User, `related_name="projects"`), created_by (`SET_NULL`), is_archived. Names are unique per org, ignoring case (a `Lower("name")` constraint, also checked in the serializer for a clean 400).
 - **Task**: project, title, description, status (`TaskStatus`: `todo`/`in_progress`/`review`/`done`), priority (`TaskPriority`: `low`/`medium`/`high`/`urgent`), assignee (`SET_NULL`), reporter (`SET_NULL`), due_date, labels (ArrayField with a GIN index), position (0-based within its (project, status) column). The `is_overdue` property is true when it's past due and not done.
-- **Comment**: task, author, body.
-- **ActivityLog**: task, actor, action, changes (JSON).
+- **Comment**: task, author (`SET_NULL`), body (max 5000), edited_at (set when the author edits).
+- **ActivityLog**: task, actor (`SET_NULL`), action (`ActivityAction`: `created`/`updated`/`moved`/`commented`), changes (JSON, e.g. `{"priority": {"from": "medium", "to": "urgent"}}`). Ordered newest first.
 - **Notification**: recipient, type, payload (JSON), is_read.
 - All models extend `TimeStampedModel`.
 
@@ -110,6 +110,20 @@ drf-spectacular · Celery + Redis · Pytest + factory_boy · Docker, Gunicorn, N
   - **Filters:** `status` and `priority` (repeatable), `assignee` (an id, `me` or `none`), `label`, `due_before`, `due_after`, `overdue`, `project`, plus `search` on title and description.
   - **Ordering:** `status_rank` and `priority_rank` are annotations that sort by meaning, not alphabet. The default is `status_rank, position, id`.
   - Losing access unassigns: `apps/tasks/signals.py` sets `assignee=None` when the user is removed from the project (`m2m_changed`) or leaves the org (Membership `post_delete`).
+- Comment and activity rules (`X-Org-ID`):
+  - Both live under a task: `/api/tasks/{task_pk}/comments/[{id}/]` and `/api/tasks/{task_pk}/activity/`. `TaskChildMixin` resolves the task with `Task.objects.visible_to(membership)`; an invisible task returns 404.
+  - **Comments (`CanComment`):**
+    - Anyone who can see the task can read, oldest first. Viewers can't post, edit or delete.
+    - Edit is author only (not even admins). It sets `edited_at`.
+    - Delete is the author, or owner/admin (moderation).
+    - Archived projects are read-only (400). There's no PUT.
+  - **Activity is read-only** (`IsOrgMember`), newest first. It's written explicitly from views with `apps/tasks/services.py` (`snapshot()`, `diff()`, `log_activity()`), not from signals, because the actor is needed:
+    - `created`: task create, with `{"title": ...}`.
+    - `updated`: PATCH, with only the fields that changed. A no-op PATCH logs nothing.
+    - `moved`: the move action, with `status` and/or `position` from/to. A no-op move logs nothing.
+    - `commented`: comment create, with `{"comment_id": ...}`.
+    - Assignee changes store `{id, email}`, so history stays readable after a user leaves.
+  - Task reads include `comment_count`.
 - Account rules (`/api/auth/`):
   - `POST register/` is public and ignores any `Authorization` header (`authentication_classes = []`).
     - The email is stored lowercase and must be unique, ignoring case.
@@ -136,7 +150,7 @@ drf-spectacular · Celery + Redis · Pytest + factory_boy · Docker, Gunicorn, N
 
 ## Testing
 - Use pytest and pytest-django with factory_boy factories, in `apps/<app>/tests/factories.py`. Shared fixtures go in the root `conftest.py`.
-  - Existing factories: `UserFactory` (accounts), plus `OrganizationFactory`, `MembershipFactory` and `InvitationFactory` (organizations), plus `ProjectFactory` (projects; pass `members=[...]`) and `TaskFactory` (tasks; appends to the bottom of its column). `OrganizationFactory` also creates the owner's `owner` membership.
+  - Existing factories: `UserFactory` (accounts), plus `OrganizationFactory`, `MembershipFactory` and `InvitationFactory` (organizations), plus `ProjectFactory` (projects; pass `members=[...]`) `TaskFactory` (tasks; appends to the bottom of its column) and `CommentFactory` (tasks). `OrganizationFactory` also creates the owner's `owner` membership.
   - In test requests, send the org header as `HTTP_X_ORG_ID`.
 - Test models, permissions and API endpoints, including tenant isolation. Aim for coverage of at least 85%.
 - In tests, Celery runs tasks immediately (`CELERY_TASK_ALWAYS_EAGER`) and email goes to the in-memory `locmem` backend.
@@ -159,7 +173,7 @@ drf-spectacular · Celery + Redis · Pytest + factory_boy · Docker, Gunicorn, N
 - [x] 2. Registration endpoint, `/api/auth/me/`, list my organizations (in `/me/`, and as `GET /api/organizations/`)
 - [x] 3. Projects CRUD with members and archive
 - [x] 4. Tasks CRUD with filters, search, ordering, pagination and the `move` action
-- [ ] 5. Comments and the activity log
+- [x] 5. Comments and the activity log
 - [ ] 6. Notifications: Celery emails, a Beat job for due-date reminders, an in-app notifications API
 - [ ] 7. Dashboard stats endpoint, coverage of at least 85%, GitHub Actions CI
 - [ ] 8. Production: Dockerfile, Gunicorn, Nginx, AWS (EC2 + RDS + ElastiCache), HTTPS

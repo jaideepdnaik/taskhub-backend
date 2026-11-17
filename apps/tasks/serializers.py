@@ -3,7 +3,7 @@ from rest_framework import serializers
 from apps.accounts.serializers import UserSummarySerializer
 from apps.projects.models import Project
 
-from .models import Task, TaskStatus
+from .models import ActivityAction, ActivityLog, Comment, Task, TaskStatus
 
 MAX_LABELS = 20
 
@@ -22,6 +22,7 @@ class TaskSerializer(serializers.ModelSerializer):
     assignee = UserSummarySerializer(read_only=True)
     reporter = UserSummarySerializer(read_only=True)
     is_overdue = serializers.BooleanField(read_only=True)
+    comment_count = serializers.IntegerField(read_only=True)
 
     class Meta:
         model = Task
@@ -38,6 +39,7 @@ class TaskSerializer(serializers.ModelSerializer):
             "is_overdue",
             "labels",
             "position",
+            "comment_count",
             "created_at",
             "updated_at",
         ]
@@ -92,3 +94,38 @@ class TaskMoveSerializer(serializers.Serializer):
     position = serializers.IntegerField(
         min_value=0, help_text="0-based slot in the target column; clamped to its end."
     )
+
+
+class CommentSerializer(serializers.ModelSerializer):
+    """Read shape for a comment."""
+
+    author = UserSummarySerializer(read_only=True)
+
+    class Meta:
+        model = Comment
+        fields = ["id", "author", "body", "edited_at", "created_at"]
+        read_only_fields = fields
+
+
+class CommentWriteSerializer(serializers.ModelSerializer):
+    """Create/edit input: just the text (trimmed, not blank, max 5000 chars)."""
+
+    body = serializers.CharField(max_length=5000)
+
+    class Meta:
+        model = Comment
+        fields = ["body"]
+
+
+class ActivityLogSerializer(serializers.ModelSerializer):
+    actor = UserSummarySerializer(read_only=True)
+    action = serializers.ChoiceField(choices=ActivityAction.choices, read_only=True)
+    changes = serializers.DictField(
+        read_only=True,
+        help_text='e.g. {"priority": {"from": "medium", "to": "urgent"}}',
+    )
+
+    class Meta:
+        model = ActivityLog
+        fields = ["id", "actor", "action", "changes", "created_at"]
+        read_only_fields = fields

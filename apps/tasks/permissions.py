@@ -23,3 +23,29 @@ class CanEditTask(BasePermission):
             self.message = "Only admins or the task's reporter can delete it."
             return view.membership.is_admin or obj.reporter_id == request.user.id
         return True
+
+
+class CanComment(BasePermission):
+    """Comment rules on a task the user can see.
+
+    - Anyone who can see the task can read its comments.
+    - Viewers are read-only (no posting, editing or deleting).
+    - Edit: the author only. Delete: the author, or owner/admin.
+    """
+
+    def has_permission(self, request, view):
+        membership = view.membership  # also enforces login + org membership
+        if request.method in SAFE_METHODS:
+            return True
+        self.message = "Viewers have read-only access."
+        return membership.can_edit
+
+    def has_object_permission(self, request, view, obj):
+        if request.method in SAFE_METHODS:
+            return True
+        is_author = obj.author_id == request.user.id
+        if view.action == "destroy":
+            self.message = "Only the author or an admin can delete this comment."
+            return is_author or view.membership.is_admin
+        self.message = "Only the author can edit this comment."
+        return is_author

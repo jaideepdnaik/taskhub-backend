@@ -1,8 +1,8 @@
-"""Board ordering: keep each (project, status) column numbered 0..n-1."""
+"""Task services: board ordering (columns numbered 0..n-1) and the activity log."""
 from django.db import transaction
 from django.db.models import Max
 
-from .models import Task
+from .models import ActivityLog, Task
 
 
 def next_position(project_id, status):
@@ -53,3 +53,36 @@ def move_task(task, status, position=None):
         )
         _renumber(old_column)
     return task
+
+
+# --- activity log ------------------------------------------------------------
+
+def _user_ref(user):
+    # Keep the email too, so history stays readable if the user later leaves.
+    return None if user is None else {"id": user.pk, "email": user.email}
+
+
+def snapshot(task):
+    """The user-editable fields of a task, in JSON-friendly form."""
+    return {
+        "title": task.title,
+        "description": task.description,
+        "status": task.status,
+        "priority": task.priority,
+        "assignee": _user_ref(task.assignee),
+        "due_date": task.due_date.isoformat() if task.due_date else None,
+        "labels": list(task.labels),
+    }
+
+
+def diff(before, after):
+    """{field: {"from": old, "to": new}} for every field that changed."""
+    return {
+        field: {"from": before[field], "to": after[field]}
+        for field in after
+        if before.get(field) != after[field]
+    }
+
+
+def log_activity(task, actor, action, changes=None):
+    return ActivityLog.objects.create(task=task, actor=actor, action=action, changes=changes or {})
