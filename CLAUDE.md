@@ -24,6 +24,8 @@ drf-spectacular · Celery + Redis · Pytest + factory_boy · Docker, Gunicorn, N
 - `config/celery.py`: the Celery app. Tasks go in each app's `tasks.py`.
 - `apps/core/`: `TimeStampedModel` (`models.py`), tenant scoping (`tenancy.py`) and shared org-role permissions (`permissions.py`).
 - `apps/accounts/`: a custom `User` that logs in with email (no username). Always use `get_user_model()` or `settings.AUTH_USER_MODEL`.
+  - All auth routes live in `apps/accounts/urls.py`: `register`, `login`, `refresh`, `logout` and `me`, under `/api/auth/`.
+  - `UserSummarySerializer` (`{id, email, full_name}`) is the shared nested user shape. Reuse it for owners, assignees, authors and so on.
 - `apps/organizations/`: Organization, Membership (role) and Invitation.
 - `apps/projects/`, `apps/tasks/` (Task, Comment, ActivityLog) and `apps/notifications/`.
 - Each app has `models.py`, `serializers.py`, `views.py`, `urls.py`, `permissions.py` (if needed), `filters.py` (if needed) and `tests/`.
@@ -80,6 +82,15 @@ drf-spectacular · Celery + Redis · Pytest + factory_boy · Docker, Gunicorn, N
   - This route is declared before the router in `apps/organizations/urls.py`, so `accept` isn't parsed as an id.
   - Status (`pending`/`accepted`/`expired`) is computed (`Invitation.status`) and filterable with `?status=` (`apps/organizations/filters.py`).
 - The default is `IsAuthenticated`. Only health and auth endpoints are public.
+- Account rules (`/api/auth/`):
+  - `POST register/` is public and ignores any `Authorization` header (`authentication_classes = []`).
+    - The email is stored lowercase and must be unique, ignoring case.
+    - The password must pass `AUTH_PASSWORD_VALIDATORS`, checked against the email and names.
+    - It returns 201 with `{user, access, refresh}`, so the user is logged in immediately.
+  - Login is case-insensitive on email (`UserManager.get_by_natural_key` uses `__iexact`).
+  - `GET`/`PATCH me/` needs login and no `X-Org-ID`.
+    - It returns the profile plus `organizations: [{id, name, slug, role}]`.
+    - Only `first_name` and `last_name` are editable. Email changes and password changes aren't built yet.
 
 ## API conventions
 - Use ViewSets with routers, under the `/api/` prefix, with plural nouns. Nest tasks under projects: `/api/projects/{id}/tasks/`.
@@ -117,7 +128,7 @@ drf-spectacular · Celery + Redis · Pytest + factory_boy · Docker, Gunicorn, N
   - [x] API: organizations at `/api/organizations/` (no header; create, list mine, retrieve, PATCH, delete) and their tests
   - [x] API: members at `/api/members/` (`X-Org-ID`; list, retrieve, PATCH role, delete or leave) and their tests
   - [x] API: invitations at `/api/invitations/` (create, list, retrieve, revoke) and `/api/invitations/accept/` (by token, no header), with tests
-- [ ] 2. Registration endpoint, `/api/auth/me/`, list my organizations
+- [x] 2. Registration endpoint, `/api/auth/me/`, list my organizations (in `/me/`, and as `GET /api/organizations/`)
 - [ ] 3. Projects CRUD with members and archive
 - [ ] 4. Tasks CRUD with filters, search, ordering, pagination and the `move` action
 - [ ] 5. Comments and the activity log

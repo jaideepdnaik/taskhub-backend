@@ -19,6 +19,10 @@ class UserManager(BaseUserManager):
         extra_fields.setdefault("is_superuser", False)
         return self._create_user(email, password, **extra_fields)
 
+    def get_by_natural_key(self, email):
+        # Make login case-insensitive: "Jane@X.com" finds "jane@x.com".
+        return self.get(**{f"{self.model.USERNAME_FIELD}__iexact": email})
+
     def create_superuser(self, email, password=None, **extra_fields):
         extra_fields.setdefault("is_staff", True)
         extra_fields.setdefault("is_superuser", True)
