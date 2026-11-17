@@ -34,7 +34,7 @@ drf-spectacular · Celery + Redis · Pytest + factory_boy · Docker, Gunicorn, N
 - **Organization**: name, slug (auto-generated and unique), owner (`PROTECT`), members (M2M through Membership).
 - **Membership**: user, organization, role. Roles are `owner`, `admin`, `member` and `viewer` (the `Role` choices; `ADMIN_ROLES` and `EDITOR_ROLES` group them). Unique on (user, organization). Helpers: `is_admin`, `can_edit`.
 - **Invitation**: organization, email (stored lowercase), role, token (auto, random), invited_by, expires_at (default 7 days), accepted_at. There's at most one pending invite per (organization, email), and the role can never be `owner`. Helpers: `is_expired`, `is_pending`. Re-inviting refreshes the existing pending invite instead of creating a new one.
-- **Project**: organization, name, description, members (M2M), created_by, is_archived.
+- **Project**: organization, name, description, members (M2M User, `related_name="projects"`), created_by (`SET_NULL`), is_archived. Names are unique per org, ignoring case (a `Lower("name")` constraint, also checked in the serializer for a clean 400).
 - **Task**: project, title, description, status (`todo`/`in_progress`/`review`/`done`), priority (`low`/`medium`/`high`/`urgent`), assignee, reporter, due_date, labels (ArrayField), position.
 - **Comment**: task, author, body.
 - **ActivityLog**: task, actor, action, changes (JSON).
@@ -82,6 +82,15 @@ drf-spectacular · Celery + Redis · Pytest + factory_boy · Docker, Gunicorn, N
   - This route is declared before the router in `apps/organizations/urls.py`, so `accept` isn't parsed as an id.
   - Status (`pending`/`accepted`/`expired`) is computed (`Invitation.status`) and filterable with `?status=` (`apps/organizations/filters.py`).
 - The default is `IsAuthenticated`. Only health and auth endpoints are public.
+- Project rules (`/api/projects/`, `X-Org-ID`, `IsOrgAdminOrReadOnly`):
+  - **Visibility:** owner and admin see every project in the org. Members and viewers see only projects they're a member of; others return 404.
+  - Only owner and admin can create, update, delete, archive or unarchive projects, and add or remove project members. The creator is added as a member automatically.
+  - The list hides archived projects unless `?is_archived=` is given. Retrieve still works on archived projects.
+  - Archived projects are read-only: PATCH and member changes return 400 until the project is unarchived. Delete is still allowed.
+  - `POST /{id}/archive/` and `/{id}/unarchive/` are idempotent.
+  - `GET`/`POST /{id}/members/` lists or adds members (`{user_id}`, which must be an org member, otherwise 400). Adding is idempotent and returns the updated list. `DELETE /{id}/members/{user_id}/` removes a member.
+  - When a Membership is deleted (removed or left), a `post_delete` signal in `apps/projects/signals.py` removes that user from all of the org's projects.
+  - Querysets: use `Exists(...)` for "is the user a member" filters, not `filter(members=user)`. The latter shares the join with `Count("members")` and makes the count wrong.
 - Account rules (`/api/auth/`):
   - `POST register/` is public and ignores any `Authorization` header (`authentication_classes = []`).
     - The email is stored lowercase and must be unique, ignoring case.
@@ -108,7 +117,7 @@ drf-spectacular · Celery + Redis · Pytest + factory_boy · Docker, Gunicorn, N
 
 ## Testing
 - Use pytest and pytest-django with factory_boy factories, in `apps/<app>/tests/factories.py`. Shared fixtures go in the root `conftest.py`.
-  - Existing factories: `UserFactory` (accounts), plus `OrganizationFactory`, `MembershipFactory` and `InvitationFactory` (organizations). `OrganizationFactory` also creates the owner's `owner` membership.
+  - Existing factories: `UserFactory` (accounts), plus `OrganizationFactory`, `MembershipFactory` and `InvitationFactory` (organizations), plus `ProjectFactory` (projects; pass `members=[...]`). `OrganizationFactory` also creates the owner's `owner` membership.
   - In test requests, send the org header as `HTTP_X_ORG_ID`.
 - Test models, permissions and API endpoints, including tenant isolation. Aim for coverage of at least 85%.
 - In tests, Celery runs tasks immediately (`CELERY_TASK_ALWAYS_EAGER`) and email goes to the in-memory `locmem` backend.
@@ -129,7 +138,7 @@ drf-spectacular · Celery + Redis · Pytest + factory_boy · Docker, Gunicorn, N
   - [x] API: members at `/api/members/` (`X-Org-ID`; list, retrieve, PATCH role, delete or leave) and their tests
   - [x] API: invitations at `/api/invitations/` (create, list, retrieve, revoke) and `/api/invitations/accept/` (by token, no header), with tests
 - [x] 2. Registration endpoint, `/api/auth/me/`, list my organizations (in `/me/`, and as `GET /api/organizations/`)
-- [ ] 3. Projects CRUD with members and archive
+- [x] 3. Projects CRUD with members and archive
 - [ ] 4. Tasks CRUD with filters, search, ordering, pagination and the `move` action
 - [ ] 5. Comments and the activity log
 - [ ] 6. Notifications: Celery emails, a Beat job for due-date reminders, an in-app notifications API
