@@ -38,7 +38,7 @@ drf-spectacular · Celery + Redis · Pytest + factory_boy · Docker, Gunicorn, N
 - **Task**: project, title, description, status (`TaskStatus`: `todo`/`in_progress`/`review`/`done`), priority (`TaskPriority`: `low`/`medium`/`high`/`urgent`), assignee (`SET_NULL`), reporter (`SET_NULL`), due_date, labels (ArrayField with a GIN index), position (0-based within its (project, status) column). The `is_overdue` property is true when it's past due and not done.
 - **Comment**: task, author (`SET_NULL`), body (max 5000), edited_at (set when the author edits).
 - **ActivityLog**: task, actor (`SET_NULL`), action (`ActivityAction`: `created`/`updated`/`moved`/`commented`), changes (JSON, e.g. `{"priority": {"from": "medium", "to": "urgent"}}`). Ordered newest first.
-- **Notification**: recipient, type, payload (JSON), is_read.
+- **Notification**: recipient, organization, type (`NotificationType`: `task_assigned`/`comment_added`/`task_due_soon`), payload (JSON: task_id, task_title, project_id, project_name, actor; plus comment_id and excerpt, or due_date), is_read, read_at, emailed_at (set once emailed, which makes sending idempotent), dedupe_key (unique per recipient when set).
 - All models extend `TimeStampedModel`.
 
 ## Multi-tenancy rules (critical)
@@ -74,7 +74,7 @@ drf-spectacular · Celery + Redis · Pytest + factory_boy · Docker, Gunicorn, N
   - `/api/invitations/` uses `X-Org-ID` and is restricted to owner and admin (`IsOrgAdmin`).
   - The role can't be `owner`, and inviting an existing member returns 400.
   - Re-inviting an email with an open, unaccepted invite (pending or expired) calls `Invitation.refresh()`: new token, new expiry, updated role. That returns 200. A brand-new invite returns 201.
-  - The token is never in list or detail responses. Only the create response includes it, inside `accept_url` (`FRONTEND_URL/invitations/accept?token=...`), until invitation emails exist (Step 6).
+  - The token is never in list or detail responses. The create response includes it inside `accept_url` (`FRONTEND_URL/invitations/accept?token=...`), kept for "copy invite link"; it's safe because only the invited email can accept. Create and refresh also email the link (`send_invitation_email`, queued with `on_commit`).
   - Accepted invites can't be revoked (400).
   - `POST /api/invitations/accept/` takes `{token}` and **no** `X-Org-ID`; it requires login.
     - The logged-in user's email must match the invite, ignoring case. Otherwise it returns 403.
@@ -124,6 +124,25 @@ drf-spectacular · Celery + Redis · Pytest + factory_boy · Docker, Gunicorn, N
     - `commented`: comment create, with `{"comment_id": ...}`.
     - Assignee changes store `{id, email}`, so history stays readable after a user leaves.
   - Task reads include `comment_count`.
+- Notification rules:
+  - **Triggers**, created with `apps/notifications/services.py` (`notify()`, `notify_task_assigned()`, `notify_comment_added()`):
+
+    | Trigger | Recipients | In-app | Email |
+    |---|---|:-:|:-:|
+    | Task assigned (create or an assignee change in PATCH) | the new assignee, unless they assigned themselves | yes | yes |
+    | Comment added | the task's assignee and reporter, excluding the author and anyone no longer in the org | yes | no |
+    | Due tomorrow (Beat job) | assignees of open tasks in non-archived projects; deduped by `due_soon:<task>:<date>` | yes | yes |
+    | Invitation | the invited email | no | yes |
+
+  - `notify(email=True)` queues `send_notification_email` with `transaction.on_commit`, so a failed request sends nothing.
+  - **API:** `/api/notifications/` needs login and no `X-Org-ID`. It only ever returns your own notifications; others return 404.
+    - `GET /` with `?is_read`, `?type` and `?organization`.
+    - `GET /unread-count/` returns `{count}`.
+    - `POST /{id}/read/` is idempotent and keeps the first `read_at`.
+    - `POST /read-all/` (honours filters) returns `{updated}`.
+    - `DELETE /{id}/`.
+    - There's no create, PUT or PATCH.
+  - Leaving or being removed from an org deletes your notifications from it (`apps/notifications/signals.py`).
 - Account rules (`/api/auth/`):
   - `POST register/` is public and ignores any `Authorization` header (`authentication_classes = []`).
     - The email is stored lowercase and must be unique, ignoring case.
@@ -147,10 +166,19 @@ drf-spectacular · Celery + Redis · Pytest + factory_boy · Docker, Gunicorn, N
 - Tasks must be idempotent, take IDs (never model instances), and use `autoretry_for` with backoff for network or email errors.
 - Trigger tasks with `transaction.on_commit(lambda: task.delay(id))`.
 - Scheduled jobs (due-date reminders, weekly summaries) go in `CELERY_BEAT_SCHEDULE`.
+- Jobs live in `apps/notifications/tasks.py`:
+  - `send_notification_email(id)` skips if already emailed.
+  - `send_invitation_email(id)` skips unless the invite is still pending.
+  - `send_due_date_reminders()` runs daily at 08:00 UTC and returns how many reminders it created.
+  - The email jobs use the shared `RETRY` policy: `autoretry_for` SMTP, connection and timeout errors, exponential back-off with jitter, at most 5 retries.
+- Testing jobs:
+  - Code that enqueues with `on_commit` must run inside `django_capture_on_commit_callbacks(execute=True)`, because test transactions never commit.
+  - In eager mode, an auto-retry shows up as `celery.exceptions.Retry`.
+- A live worker run was verified against Docker Redis (port 6380): `celery -A config worker -l info -P solo`.
 
 ## Testing
 - Use pytest and pytest-django with factory_boy factories, in `apps/<app>/tests/factories.py`. Shared fixtures go in the root `conftest.py`.
-  - Existing factories: `UserFactory` (accounts), plus `OrganizationFactory`, `MembershipFactory` and `InvitationFactory` (organizations), plus `ProjectFactory` (projects; pass `members=[...]`) `TaskFactory` (tasks; appends to the bottom of its column) and `CommentFactory` (tasks). `OrganizationFactory` also creates the owner's `owner` membership.
+  - Existing factories: `UserFactory` (accounts), plus `OrganizationFactory`, `MembershipFactory` and `InvitationFactory` (organizations), plus `ProjectFactory` (projects; pass `members=[...]`) `TaskFactory` (tasks; appends to the bottom of its column), `CommentFactory` (tasks) and `NotificationFactory` (notifications). `OrganizationFactory` also creates the owner's `owner` membership.
   - In test requests, send the org header as `HTTP_X_ORG_ID`.
 - Test models, permissions and API endpoints, including tenant isolation. Aim for coverage of at least 85%.
 - In tests, Celery runs tasks immediately (`CELERY_TASK_ALWAYS_EAGER`) and email goes to the in-memory `locmem` backend.
@@ -174,6 +202,6 @@ drf-spectacular · Celery + Redis · Pytest + factory_boy · Docker, Gunicorn, N
 - [x] 3. Projects CRUD with members and archive
 - [x] 4. Tasks CRUD with filters, search, ordering, pagination and the `move` action
 - [x] 5. Comments and the activity log
-- [ ] 6. Notifications: Celery emails, a Beat job for due-date reminders, an in-app notifications API
+- [x] 6. Notifications: Celery emails, a Beat job for due-date reminders, an in-app notifications API
 - [ ] 7. Dashboard stats endpoint, coverage of at least 85%, GitHub Actions CI
 - [ ] 8. Production: Dockerfile, Gunicorn, Nginx, AWS (EC2 + RDS + ElastiCache), HTTPS

@@ -1,5 +1,7 @@
 """Base settings shared by every environment."""
 from datetime import timedelta
+
+from celery.schedules import crontab
 from pathlib import Path
 
 import environ
@@ -141,6 +143,12 @@ CELERY_RESULT_BACKEND = CELERY_BROKER_URL
 CELERY_TIMEZONE = TIME_ZONE
 CELERY_TASK_ACKS_LATE = True
 CELERY_TASK_TIME_LIMIT = 5 * 60
+CELERY_BEAT_SCHEDULE = {
+    "send-due-date-reminders": {
+        "task": "apps.notifications.tasks.send_due_date_reminders",
+        "schedule": crontab(hour=8, minute=0),  # daily, 08:00 UTC
+    },
+}
 
 # --- Email ---
 EMAIL_BACKEND = env("EMAIL_BACKEND", default="django.core.mail.backends.console.EmailBackend")

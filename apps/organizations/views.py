@@ -1,3 +1,4 @@
+from django.db import transaction
 from django.db.models import Count, OuterRef, Subquery
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -9,6 +10,7 @@ from rest_framework.views import APIView
 
 from apps.core.permissions import IsOrgAdmin
 from apps.core.tenancy import ORG_HEADER_PARAMETER, OrgScopedMixin
+from apps.notifications.tasks import send_invitation_email
 
 from .filters import InvitationFilter
 from .models import Invitation, Membership, Organization, Role
@@ -150,7 +152,7 @@ class InvitationViewSet(
                 invited_by=request.user,
             )
             response_status = status.HTTP_201_CREATED
-        # Sending the invitation email comes in roadmap step 6 (Celery).
+        transaction.on_commit(lambda: send_invitation_email.delay(invitation.pk))
         return Response(InvitationCreatedSerializer(invitation).data, status=response_status)
 
     def perform_destroy(self, instance):

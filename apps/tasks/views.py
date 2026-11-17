@@ -11,6 +11,7 @@ from rest_framework.response import Response
 
 from apps.core.permissions import IsOrgMember
 from apps.core.tenancy import ORG_HEADER_PARAMETER, OrgScopedMixin
+from apps.notifications.services import notify_comment_added, notify_task_assigned
 from apps.projects.models import Project
 
 from .filters import TaskFilter
@@ -117,6 +118,7 @@ class ProjectTaskViewSet(BaseTaskViewSet, mixins.ListModelMixin, mixins.CreateMo
             position=next_position(project.pk, task_status),
         )
         log_activity(task, request.user, ActivityAction.CREATED, {"title": task.title})
+        notify_task_assigned(task, request.user)
         return self.task_response(task, status.HTTP_201_CREATED)
 
 
@@ -148,6 +150,8 @@ class TaskViewSet(
         changes = diff(before, snapshot(task))
         if changes:  # no-op PATCHes don't clutter the history
             log_activity(task, request.user, ActivityAction.UPDATED, changes)
+        if "assignee" in changes:
+            notify_task_assigned(task, request.user)
         return self.task_response(task)
 
     def perform_destroy(self, instance):
@@ -220,6 +224,7 @@ class CommentViewSet(
         serializer.is_valid(raise_exception=True)
         comment = serializer.save(task=task, author=request.user)
         log_activity(task, request.user, ActivityAction.COMMENTED, {"comment_id": comment.pk})
+        notify_comment_added(comment)
         return Response(CommentSerializer(comment).data, status=status.HTTP_201_CREATED)
 
     @extend_schema(request=CommentWriteSerializer, responses=CommentSerializer)
