@@ -67,6 +67,18 @@ drf-spectacular · Celery + Redis · Pytest + factory_boy · Docker, Gunicorn, N
   - Only the owner can change or remove an admin. Admins can manage members and viewers.
   - Any non-owner can leave the org by deleting their own membership. The owner must delete or transfer the org instead.
   - There's no create endpoint for members. People join through invitations.
+- Invitation rules:
+  - `/api/invitations/` uses `X-Org-ID` and is restricted to owner and admin (`IsOrgAdmin`).
+  - The role can't be `owner`, and inviting an existing member returns 400.
+  - Re-inviting an email with an open, unaccepted invite (pending or expired) calls `Invitation.refresh()`: new token, new expiry, updated role. That returns 200. A brand-new invite returns 201.
+  - The token is never in list or detail responses. Only the create response includes it, inside `accept_url` (`FRONTEND_URL/invitations/accept?token=...`), until invitation emails exist (Step 6).
+  - Accepted invites can't be revoked (400).
+  - `POST /api/invitations/accept/` takes `{token}` and **no** `X-Org-ID`; it requires login.
+    - The logged-in user's email must match the invite, ignoring case. Otherwise it returns 403.
+    - Unknown tokens return 404. Used, expired or already-a-member cases return 400.
+    - On success it creates the Membership, sets `accepted_at` and returns 201 with `{organization, role}`.
+  - This route is declared before the router in `apps/organizations/urls.py`, so `accept` isn't parsed as an id.
+  - Status (`pending`/`accepted`/`expired`) is computed (`Invitation.status`) and filterable with `?status=` (`apps/organizations/filters.py`).
 - The default is `IsAuthenticated`. Only health and auth endpoints are public.
 
 ## API conventions
@@ -76,7 +88,7 @@ drf-spectacular · Celery + Redis · Pytest + factory_boy · Docker, Gunicorn, N
 - Use separate read and write serializers when the shapes differ. Return nested summaries, such as assignee name and email, on reads.
 - Avoid N+1 queries: use `select_related` and `prefetch_related` in `get_queryset()`.
 - Add `@extend_schema` wherever drf-spectacular can't infer the request or response shape. Keep the schema free of warnings. If two choice fields share a name but have different options, name them in `SPECTACULAR_SETTINGS["ENUM_NAME_OVERRIDES"]`.
-- Errors use DRF's standard format. Don't invent custom error envelopes.
+- Errors use DRF's standard format. Don't invent custom error envelopes. When raising field errors by hand, wrap messages in lists, for example `ValidationError({"token": ["..."]})`, so they match DRF's own field errors.
 
 ## Celery
 - Tasks must be idempotent, take IDs (never model instances), and use `autoretry_for` with backoff for network or email errors.
@@ -85,7 +97,7 @@ drf-spectacular · Celery + Redis · Pytest + factory_boy · Docker, Gunicorn, N
 
 ## Testing
 - Use pytest and pytest-django with factory_boy factories, in `apps/<app>/tests/factories.py`. Shared fixtures go in the root `conftest.py`.
-  - Existing factories: `UserFactory` (accounts), plus `OrganizationFactory` and `MembershipFactory` (organizations). `OrganizationFactory` also creates the owner's `owner` membership.
+  - Existing factories: `UserFactory` (accounts), plus `OrganizationFactory`, `MembershipFactory` and `InvitationFactory` (organizations). `OrganizationFactory` also creates the owner's `owner` membership.
   - In test requests, send the org header as `HTTP_X_ORG_ID`.
 - Test models, permissions and API endpoints, including tenant isolation. Aim for coverage of at least 85%.
 - In tests, Celery runs tasks immediately (`CELERY_TASK_ALWAYS_EAGER`) and email goes to the in-memory `locmem` backend.
@@ -98,13 +110,13 @@ drf-spectacular · Celery + Redis · Pytest + factory_boy · Docker, Gunicorn, N
 
 ## Roadmap
 - [x] 0. Project setup: settings, custom User, JWT, Swagger docs, Celery, Pytest
-- [ ] 1. Organizations, memberships, invitations, org scoping and permissions, tenant-isolation tests
+- [x] 1. Organizations, memberships, invitations, org scoping and permissions, tenant-isolation tests
   - [x] Models: Organization, Membership, Invitation (plus admin and migration)
   - [x] Tenant scoping: `OrgScopedMixin` (`apps/core/tenancy.py`) and tests
   - [x] Org-role permissions (`apps/core/permissions.py`) and the role-matrix tests
   - [x] API: organizations at `/api/organizations/` (no header; create, list mine, retrieve, PATCH, delete) and their tests
   - [x] API: members at `/api/members/` (`X-Org-ID`; list, retrieve, PATCH role, delete or leave) and their tests
-  - [ ] API: invitations at `/api/invitations/` (create, list, revoke) and `/api/invitations/accept/` (by token, no header), with tests
+  - [x] API: invitations at `/api/invitations/` (create, list, retrieve, revoke) and `/api/invitations/accept/` (by token, no header), with tests
 - [ ] 2. Registration endpoint, `/api/auth/me/`, list my organizations
 - [ ] 3. Projects CRUD with members and archive
 - [ ] 4. Tasks CRUD with filters, search, ordering, pagination and the `move` action

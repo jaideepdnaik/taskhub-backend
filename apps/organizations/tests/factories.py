@@ -1,7 +1,7 @@
 import factory
 
 from apps.accounts.tests.factories import UserFactory
-from apps.organizations.models import Membership, Organization, Role
+from apps.organizations.models import Invitation, Membership, Organization, Role
 
 
 class OrganizationFactory(factory.django.DjangoModelFactory):
@@ -27,3 +27,13 @@ class MembershipFactory(factory.django.DjangoModelFactory):
     user = factory.SubFactory(UserFactory)
     organization = factory.SubFactory(OrganizationFactory)
     role = Role.MEMBER
+
+
+class InvitationFactory(factory.django.DjangoModelFactory):
+    class Meta:
+        model = Invitation
+
+    organization = factory.SubFactory(OrganizationFactory)
+    email = factory.Sequence(lambda n: f"invitee{n}@example.com")
+    role = Role.MEMBER
+    invited_by = factory.SelfAttribute("organization.owner")

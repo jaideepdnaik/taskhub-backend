@@ -149,3 +149,25 @@ class Invitation(TimeStampedModel):
     @property
     def is_pending(self):
         return self.accepted_at is None and not self.is_expired
+
+    @property
+    def status(self):
+        if self.accepted_at is not None:
+            return InvitationStatus.ACCEPTED
+        if self.is_expired:
+            return InvitationStatus.EXPIRED
+        return InvitationStatus.PENDING
+
+    def refresh(self, role, invited_by):
+        """Re-send an open invite: new token, new expiry, updated role."""
+        self.role = role
+        self.invited_by = invited_by
+        self.token = generate_invitation_token()
+        self.expires_at = default_invitation_expiry()
+        self.save()
+
+
+class InvitationStatus(models.TextChoices):
+    PENDING = "pending", "Pending"
+    ACCEPTED = "accepted", "Accepted"
+    EXPIRED = "expired", "Expired"
