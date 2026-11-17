@@ -123,6 +123,11 @@ SPECTACULAR_SETTINGS = {
     "VERSION": "0.1.0",
     "SERVE_INCLUDE_SCHEMA": False,
     "COMPONENT_SPLIT_REQUEST": True,
+    # Give shared choice sets stable names in the schema.
+    "ENUM_NAME_OVERRIDES": {
+        "RoleEnum": "apps.organizations.models.Role",
+        "AssignableRoleEnum": "apps.organizations.serializers.ASSIGNABLE_ROLES",
+    },
 }
 
 CORS_ALLOWED_ORIGINS = env.list("CORS_ALLOWED_ORIGINS", default=[])

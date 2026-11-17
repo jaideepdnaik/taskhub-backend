@@ -58,6 +58,15 @@ drf-spectacular · Celery + Redis · Pytest + factory_boy · Docker, Gunicorn, N
 - App-specific object permissions go in that app's `permissions.py`, for example `IsProjectMember` in projects and `CanEditTask` in tasks.
 - Viewer is read-only. Member can create and edit tasks in their projects. Admin and Owner manage projects and members. Only Owner can delete the org.
 - Outsiders get a 404 from the mixin. Members whose role isn't allowed get a 403 from the permission class.
+- Org-specific permissions live in `apps/organizations/permissions.py`:
+  - `OrganizationPermission` covers `/api/organizations/{id}/`: any member reads, owner and admin rename, the owner deletes.
+  - `MembershipPermission` covers `/api/members/`.
+- Membership rules (`/api/members/`):
+  - The owner's membership can't be removed or have its role changed.
+  - Nobody can be made owner through the API. A role can only be set to admin, member or viewer (`ASSIGNABLE_ROLES`). Ownership transfer will be a separate feature later.
+  - Only the owner can change or remove an admin. Admins can manage members and viewers.
+  - Any non-owner can leave the org by deleting their own membership. The owner must delete or transfer the org instead.
+  - There's no create endpoint for members. People join through invitations.
 - The default is `IsAuthenticated`. Only health and auth endpoints are public.
 
 ## API conventions
@@ -66,7 +75,7 @@ drf-spectacular · Celery + Redis · Pytest + factory_boy · Docker, Gunicorn, N
 - Use django-filter `FilterSet` classes for filtering, plus `SearchFilter` and `OrderingFilter`. Pagination is page-number with `PAGE_SIZE=20`.
 - Use separate read and write serializers when the shapes differ. Return nested summaries, such as assignee name and email, on reads.
 - Avoid N+1 queries: use `select_related` and `prefetch_related` in `get_queryset()`.
-- Add `@extend_schema` wherever drf-spectacular can't infer the request or response shape. Keep the schema free of warnings.
+- Add `@extend_schema` wherever drf-spectacular can't infer the request or response shape. Keep the schema free of warnings. If two choice fields share a name but have different options, name them in `SPECTACULAR_SETTINGS["ENUM_NAME_OVERRIDES"]`.
 - Errors use DRF's standard format. Don't invent custom error envelopes.
 
 ## Celery
@@ -93,8 +102,9 @@ drf-spectacular · Celery + Redis · Pytest + factory_boy · Docker, Gunicorn, N
   - [x] Models: Organization, Membership, Invitation (plus admin and migration)
   - [x] Tenant scoping: `OrgScopedMixin` (`apps/core/tenancy.py`) and tests
   - [x] Org-role permissions (`apps/core/permissions.py`) and the role-matrix tests
-  - [ ] API: organizations (create/list mine/retrieve/update/delete), members (list/change role/remove), invitations (create/list/revoke/accept by token)
-  - [ ] Endpoint tests, including org-A-vs-org-B tenant isolation
+  - [x] API: organizations at `/api/organizations/` (no header; create, list mine, retrieve, PATCH, delete) and their tests
+  - [x] API: members at `/api/members/` (`X-Org-ID`; list, retrieve, PATCH role, delete or leave) and their tests
+  - [ ] API: invitations at `/api/invitations/` (create, list, revoke) and `/api/invitations/accept/` (by token, no header), with tests
 - [ ] 2. Registration endpoint, `/api/auth/me/`, list my organizations
 - [ ] 3. Projects CRUD with members and archive
 - [ ] 4. Tasks CRUD with filters, search, ordering, pagination and the `move` action

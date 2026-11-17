@@ -2,7 +2,10 @@ from rest_framework import serializers
 
 from apps.accounts.serializers import UserSummarySerializer
 
-from .models import Organization, Role
+from .models import Membership, Organization, Role
+
+# Roles that can be assigned through the API. Ownership is never handed out here.
+ASSIGNABLE_ROLES = [(value, label) for value, label in Role.choices if value != Role.OWNER]
 
 
 class OrganizationSerializer(serializers.ModelSerializer):
@@ -29,3 +32,25 @@ class OrganizationSerializer(serializers.ModelSerializer):
             "updated_at",
         ]
         read_only_fields = ["slug", "created_at", "updated_at"]
+
+
+class MembershipSerializer(serializers.ModelSerializer):
+    """Read shape: a member of the current org."""
+
+    user = UserSummarySerializer(read_only=True)
+    joined_at = serializers.DateTimeField(source="created_at", read_only=True)
+
+    class Meta:
+        model = Membership
+        fields = ["id", "user", "role", "joined_at"]
+        read_only_fields = fields
+
+
+class MembershipRoleSerializer(serializers.ModelSerializer):
+    """Write shape: change a member's role (never to owner)."""
+
+    role = serializers.ChoiceField(choices=ASSIGNABLE_ROLES)
+
+    class Meta:
+        model = Membership
+        fields = ["role"]
