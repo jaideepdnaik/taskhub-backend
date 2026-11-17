@@ -14,10 +14,11 @@ drf-spectacular · Celery + Redis · Pytest + factory_boy · Docker, Gunicorn, N
 - Services: `docker compose up -d` (Postgres on 5432, Redis on host port **6380**, because 6379 is taken by another local Redis)
 - Run server: `python manage.py runserver`
 - Migrations: `python manage.py makemigrations <app>` then `python manage.py migrate`
-- Tests: `pytest` · with coverage: `pytest --cov=apps --cov-report=term-missing`
+- Tests: `pytest` · with coverage: `pytest --cov=apps`. `.coveragerc` measures app code only (no tests or migrations), with branch coverage, and **fails below 85%**.
 - Celery worker: `celery -A config worker -l info -P solo` (solo pool is required on Windows)
 - Celery beat: `celery -A config beat -l info`
-- OpenAPI schema: `python manage.py spectacular --file schema.yml --validate`
+- OpenAPI schema: `python manage.py spectacular --file schema.yml --validate --fail-on-warn` (CI uses `--fail-on-warn`)
+- CI: `.github/workflows/ci.yml` runs on pushes to `main` and on PRs, with Postgres 17 and Redis 7 services and no `.env` (config comes from env vars). Its steps are `check`, `makemigrations --check`, the schema with `--fail-on-warn`, and `pytest --cov=apps` with the 85% gate. Run the same commands locally before pushing.
 
 ## Layout
 - `config/settings/` holds `base.py`, `dev.py`, `test.py` and `prod.py`. Config comes from `.env` via django-environ.
@@ -28,6 +29,7 @@ drf-spectacular · Celery + Redis · Pytest + factory_boy · Docker, Gunicorn, N
   - `UserSummarySerializer` (`{id, email, full_name}`) is the shared nested user shape. Reuse it for owners, assignees, authors and so on.
 - `apps/organizations/`: Organization, Membership (role) and Invitation.
 - `apps/projects/`, `apps/tasks/` (Task, Comment, ActivityLog) and `apps/notifications/`.
+- `apps/dashboard/`: no models, just the read-only stats endpoint (`GET /api/dashboard/`).
 - Each app has `models.py`, `serializers.py`, `views.py`, `urls.py`, `permissions.py` (if needed), `filters.py` (if needed) and `tests/`.
 
 ## Domain model
@@ -48,6 +50,7 @@ drf-spectacular · Celery + Redis · Pytest + factory_boy · Docker, Gunicorn, N
   - filters `get_queryset()` with the `org_lookup` path (default `"organization"`; set something like `"project__organization"` for indirect models and override `perform_create`);
   - sets `organization` in `perform_create()`.
 - Add `@extend_schema(parameters=[ORG_HEADER_PARAMETER])` to org-scoped views so the header shows up in the docs.
+- CORS must allow the header: `CORS_ALLOW_HEADERS = (*default_headers, "x-org-id")` in `base.py`. Without it, browser preflights block every org-scoped call. Test clients don't preflight; `apps/core/tests/test_cors.py` guards this. Dev allows the origin `http://localhost:5173` (`dev.py`).
 - **Every queryset must be filtered to the current org.** Never use `Model.objects.all()` in a view. Override `get_queryset()`.
 - Set `organization` on the server side when creating objects. Never accept it from the request body.
 - When you return objects from another org, return a 404, not a 403. That way you don't reveal that they exist.
@@ -143,6 +146,12 @@ drf-spectacular · Celery + Redis · Pytest + factory_boy · Docker, Gunicorn, N
     - `DELETE /{id}/`.
     - There's no create, PUT or PATCH.
   - Leaving or being removed from an org deletes your notifications from it (`apps/notifications/signals.py`).
+- Dashboard rules (`GET /api/dashboard/`, `X-Org-ID`, `IsOrgMember`, read-only):
+  - It returns `projects` (active and archived), `tasks` (total, open, overdue, due_this_week, unassigned, completed_last_7_days, by_status, by_priority), `my_tasks` (open, overdue, due_this_week), `members` (total, by_role) and `recent_activity` (the latest 10, each with `task {id, title, project_id}`).
+  - It only counts what the user can see (`visible_to`). Task stats cover non-archived projects. `?project=<id>` limits stats to one visible project, archived or not; an invisible project returns 404 and a non-numeric id returns 400.
+  - "Open" means not done, and "due this week" means today through today+6.
+  - `completed_last_7_days` counts distinct tasks with an activity entry `changes.status.to == "done"` in the last 7 days that are still done.
+  - It uses a constant 6 queries (conditional `Count(filter=Q(...))` aggregates).
 - Account rules (`/api/auth/`):
   - `POST register/` is public and ignores any `Authorization` header (`authentication_classes = []`).
     - The email is stored lowercase and must be unique, ignoring case.
@@ -203,5 +212,5 @@ drf-spectacular · Celery + Redis · Pytest + factory_boy · Docker, Gunicorn, N
 - [x] 4. Tasks CRUD with filters, search, ordering, pagination and the `move` action
 - [x] 5. Comments and the activity log
 - [x] 6. Notifications: Celery emails, a Beat job for due-date reminders, an in-app notifications API
-- [ ] 7. Dashboard stats endpoint, coverage of at least 85%, GitHub Actions CI
+- [x] 7. Dashboard stats endpoint, coverage of at least 85%, GitHub Actions CI
 - [ ] 8. Production: Dockerfile, Gunicorn, Nginx, AWS (EC2 + RDS + ElastiCache), HTTPS

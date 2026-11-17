@@ -1,5 +1,7 @@
 # TaskHub Backend
 
+![CI](https://github.com/jaideepdnaik/taskhub-backend/actions/workflows/ci.yml/badge.svg)
+
 Multi-tenant project & task management API built with Django REST Framework.
 
 **Stack:** Django 6 · DRF · PostgreSQL · SimpleJWT · django-filter · drf-spectacular · Celery + Redis · Pytest
@@ -36,4 +38,4 @@ python manage.py runserver
 - API docs: http://localhost:8000/api/docs/
 - Health check: http://localhost:8000/api/health/
 - Celery worker (Windows needs the solo pool): `celery -A config worker -l info -P solo`
-- Tests: `pytest --cov=apps`
+- Tests: `pytest --cov=apps` (fails below 85% coverage; CI runs the same on every push)

@@ -5,6 +5,7 @@ from celery.schedules import crontab
 from pathlib import Path
 
 import environ
+from corsheaders.defaults import default_headers
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
@@ -38,6 +39,7 @@ LOCAL_APPS = [
     "apps.projects",
     "apps.tasks",
     "apps.notifications",
+    "apps.dashboard",
 ]
 INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS
 
@@ -136,6 +138,8 @@ SPECTACULAR_SETTINGS = {
 }
 
 CORS_ALLOWED_ORIGINS = env.list("CORS_ALLOWED_ORIGINS", default=[])
+# The frontend sends the current org in X-Org-ID, so browsers must be allowed to send it.
+CORS_ALLOW_HEADERS = (*default_headers, "x-org-id")
 
 # --- Celery ---
 CELERY_BROKER_URL = env("REDIS_URL", default="redis://localhost:6380/0")
