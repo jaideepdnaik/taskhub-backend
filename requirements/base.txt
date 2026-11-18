@@ -8,3 +8,6 @@ django-environ==0.14.0
 psycopg[binary]==3.3.9
 celery==5.7.0
 redis==8.1.0
+pgvector==0.5.1
+voyageai==0.6.0
+anthropic==2.10.0

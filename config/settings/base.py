@@ -40,6 +40,7 @@ LOCAL_APPS = [
     "apps.tasks",
     "apps.notifications",
     "apps.dashboard",
+    "apps.assistant",
 ]
 INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS
 
@@ -111,6 +112,10 @@ REST_FRAMEWORK = {
     "DEFAULT_PAGINATION_CLASS": "apps.core.pagination.StandardPagination",
     "PAGE_SIZE": 20,
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
+    # Only views that opt in (throttle_scope = "...") are throttled.
+    "DEFAULT_THROTTLE_RATES": {
+        "assistant": env("ASSISTANT_THROTTLE_RATE", default="30/hour"),
+    },
 }
 
 SIMPLE_JWT = {
@@ -158,3 +163,17 @@ CELERY_BEAT_SCHEDULE = {
 EMAIL_BACKEND = env("EMAIL_BACKEND", default="django.core.mail.backends.console.EmailBackend")
 DEFAULT_FROM_EMAIL = env("DEFAULT_FROM_EMAIL", default="TaskHub <noreply@taskhub.local>")
 FRONTEND_URL = env("FRONTEND_URL", default="http://localhost:5173")
+
+# --- Ask TaskHub (RAG assistant, apps/assistant) ---
+# Embeddings: "voyage" (needs VOYAGE_API_KEY) or "fake" (tests only).
+ASSISTANT_EMBEDDER = env("ASSISTANT_EMBEDDER", default="voyage")
+VOYAGE_API_KEY = env("VOYAGE_API_KEY", default="")
+ASSISTANT_EMBED_MODEL = env("ASSISTANT_EMBED_MODEL", default="voyage-4")
+# Answers: "api" (Anthropic API, needs ANTHROPIC_API_KEY; use in production),
+# "cli" (your logged-in Claude Code; local dev only) or "fake" (tests only).
+ASSISTANT_LLM_BACKEND = env("ASSISTANT_LLM_BACKEND", default="api")
+ASSISTANT_MODEL = env("ASSISTANT_MODEL", default="claude-opus-5-5")
+ASSISTANT_EFFORT = env("ASSISTANT_EFFORT", default="medium")
+ASSISTANT_CLI_PATH = env("ASSISTANT_CLI_PATH", default="claude")
+ASSISTANT_CLI_MODEL = env("ASSISTANT_CLI_MODEL", default="")  # empty = CLI default
+ASSISTANT_TIMEOUT_SECONDS = env.int("ASSISTANT_TIMEOUT_SECONDS", default=120)
