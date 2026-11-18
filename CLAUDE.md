@@ -7,11 +7,13 @@ org must never see another org's data. The React frontend lives in a separate re
 
 ## Stack
 Django 6 · Django REST Framework · PostgreSQL · SimpleJWT · django-filter ·
-drf-spectacular · Celery + Redis · Pytest + factory_boy · Docker, Gunicorn, Nginx, AWS
+drf-spectacular · Celery + Redis · pgvector · Voyage AI embeddings · Anthropic SDK / Claude CLI ·
+Pytest + factory_boy · Docker, Gunicorn, Nginx, AWS
 
 ## Commands (Windows / PowerShell)
 - Activate venv: `.\.venv\Scripts\Activate.ps1`
-- Services: `docker compose up -d` (Postgres on 5432, Redis on host port **6380**, because 6379 is taken by another local Redis)
+- Services: `docker compose up -d` (Postgres on 5432 using the `pgvector/pgvector:pg17` image, Redis on host port **6380**, because 6379 is taken by another local Redis)
+- Ask TaskHub index backfill: `python manage.py reindex_knowledge [--org ID]` (unchanged text isn't re-embedded)
 - Run server: `python manage.py runserver`
 - Migrations: `python manage.py makemigrations <app>` then `python manage.py migrate`
 - Tests: `pytest` · with coverage: `pytest --cov=apps`. `.coveragerc` measures app code only (no tests or migrations), with branch coverage, and **fails below 85%**.
@@ -30,6 +32,7 @@ drf-spectacular · Celery + Redis · Pytest + factory_boy · Docker, Gunicorn, N
 - `apps/organizations/`: Organization, Membership (role) and Invitation.
 - `apps/projects/`, `apps/tasks/` (Task, Comment, ActivityLog) and `apps/notifications/`.
 - `apps/dashboard/`: no models, just the read-only stats endpoint (`GET /api/dashboard/`).
+- `apps/assistant/`: Ask TaskHub (RAG). `embeddings.py` (Voyage/fake), `indexing.py` (chunking, hash-based re-embedding), `retrieval.py` (tenant-safe hybrid search), `llm.py` (prompt, citations, api/cli/fake backends), `services.py` (`ask()`), plus the conversations API.
 - Each app has `models.py`, `serializers.py`, `views.py`, `urls.py`, `permissions.py` (if needed), `filters.py` (if needed) and `tests/`.
 
 ## Domain model
@@ -41,6 +44,9 @@ drf-spectacular · Celery + Redis · Pytest + factory_boy · Docker, Gunicorn, N
 - **Comment**: task, author (`SET_NULL`), body (max 5000), edited_at (set when the author edits).
 - **ActivityLog**: task, actor (`SET_NULL`), action (`ActivityAction`: `created`/`updated`/`moved`/`commented`), changes (JSON, e.g. `{"priority": {"from": "medium", "to": "urgent"}}`). Ordered newest first.
 - **Notification**: recipient, organization, type (`NotificationType`: `task_assigned`/`comment_added`/`task_due_soon`), payload (JSON: task_id, task_title, project_id, project_name, actor; plus comment_id and excerpt, or due_date), is_read, read_at, emailed_at (set once emailed, which makes sending idempotent), dedupe_key (unique per recipient when set).
+- **KnowledgeChunk**: organization, project, task (nullable), comment (nullable), all `CASCADE`; source_type (`ChunkSource`: `project`/`task`/`comment`), source_key (`"task:12"`, unique with chunk_index), content, content_hash, embedding (`VectorField`, `EMBEDDING_DIMENSIONS = 1024`, HNSW cosine index) and a generated `search_vector` (tsvector, GIN).
+- **Conversation**: organization, user, optional project (limits retrieval), title (from the first question). Private to its user.
+- **Message**: conversation, role (`MessageRole`: `user`/`assistant`), content, citations (JSON list), model, usage (token counts).
 - All models extend `TimeStampedModel`.
 
 ## Multi-tenancy rules (critical)
@@ -152,6 +158,15 @@ drf-spectacular · Celery + Redis · Pytest + factory_boy · Docker, Gunicorn, N
   - "Open" means not done, and "due this week" means today through today+6.
   - `completed_last_7_days` counts distinct tasks with an activity entry `changes.status.to == "done"` in the last 7 days that are still done.
   - It uses a constant 6 queries (conditional `Count(filter=Q(...))` aggregates).
+- Ask TaskHub rules (`/api/assistant/conversations/`, `X-Org-ID`, `IsOrgMember`; viewers can ask):
+  - **Endpoints:** `POST /` `{question, project_id?}` starts a thread and answers it (201, conversation with messages). `GET /` lists your threads in this org, `GET /{id}/` includes messages, `DELETE /{id}/`. `POST /{id}/messages/` `{question}` asks a follow-up (201, `{question, answer}`). There's no PUT or PATCH.
+  - **Privacy:** a conversation is visible only to its user. Anyone else, in this org or another, gets 404. Leaving an org deletes your conversations there (`apps/assistant/signals.py`).
+  - **Indexing:** `post_save` on Project, Task and Comment queues `index_source(kind, id)` with `on_commit`. Saves whose `update_fields` don't touch text (`TEXT_FIELDS`) are skipped, and nothing is queued without `VOYAGE_API_KEY`. Only meaning-bearing text is embedded. Status, priority, assignee and due date are read live at question time, so moves never re-embed. Re-indexing a task re-checks its comments, which include the task title.
+  - **Retrieval** (`retrieve()`): the base queryset is `visible_chunks(membership, project)` (org plus `Project.objects.visible_to`), applied **before** ranking. Vector (cosine) and full-text rankings are merged with Reciprocal Rank Fusion, top 8. Sources carried from the previous answer are re-filtered through the same queryset.
+  - **Generation:** `ASSISTANT_LLM_BACKEND` is `api` (Anthropic SDK, `ASSISTANT_MODEL` default `claude-opus-5-5`, server-side refusal fallback except on Haiku), `cli` (`claude -p` with `--tools ""`, `--strict-mcp-config`, an empty temp cwd, and `ANTHROPIC_API_KEY` stripped so the subscription login is used; dev only, and `prod.py` refuses it) or `fake` (tests). Sources are escaped `<source>` blocks, and the system prompt treats them as data, not instructions.
+  - **Citations:** the model cites `[n]`. `extract_citations()` keeps only numbers that match retrieved sources and drops the rest from the text. On read, citations to projects the user can no longer see are hidden.
+  - **Errors:** model unavailable → 503, refusal → 422, and nothing is saved either way. Questions (create and messages) use `ScopedRateThrottle` scope `assistant` (`ASSISTANT_THROTTLE_RATE`, default `30/hour`). Reads aren't throttled.
+  - **Tests** never call Voyage, Anthropic or the CLI (`test.py` sets the fake backends). They check what the fake model received to prove that other orgs' and hidden projects' content never reaches the prompt.
 - Account rules (`/api/auth/`):
   - `POST register/` is public and ignores any `Authorization` header (`authentication_classes = []`).
     - The email is stored lowercase and must be unique, ignoring case.
@@ -214,3 +229,5 @@ drf-spectacular · Celery + Redis · Pytest + factory_boy · Docker, Gunicorn, N
 - [x] 6. Notifications: Celery emails, a Beat job for due-date reminders, an in-app notifications API
 - [x] 7. Dashboard stats endpoint, coverage of at least 85%, GitHub Actions CI
 - [ ] 8. Production: Dockerfile, Gunicorn, Nginx, AWS (EC2 + RDS + ElastiCache), HTTPS
+  - Ask TaskHub needs: the `vector` extension on RDS, `VOYAGE_API_KEY`, `ASSISTANT_LLM_BACKEND=api` with `ANTHROPIC_API_KEY`, a Gunicorn/Nginx timeout above `ASSISTANT_TIMEOUT_SECONDS` (120s), and a one-off `reindex_knowledge`.
+- [x] 9. Ask TaskHub: RAG assistant (pgvector + Voyage embeddings + Claude), with saved conversations, citations and tenant-isolation tests
