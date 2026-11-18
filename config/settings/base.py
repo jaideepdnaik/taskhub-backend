@@ -139,6 +139,8 @@ SPECTACULAR_SETTINGS = {
         "InvitationStatusEnum": "apps.organizations.models.InvitationStatus",
         "TaskStatusEnum": "apps.tasks.models.TaskStatus",
         "TaskPriorityEnum": "apps.tasks.models.TaskPriority",
+        "MessageRoleEnum": "apps.assistant.models.MessageRole",
+        "ChunkSourceEnum": "apps.assistant.models.ChunkSource",
     },
 }
 
